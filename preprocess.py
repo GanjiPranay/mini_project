@@ -10,19 +10,20 @@ def preprocess_vein(image_path, show_steps=False):
 
     img = cv2.imread(image_path)
     if img is None:
-        print(f"ERROR: Cannot load → {image_path}")
+        print(f"  ERROR: Cannot load image → {image_path}")
         return None
 
+    # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # CLAHE — boost local contrast so faint veins appear
+    # CLAHE — boost local contrast so faint veins become visible
     clahe     = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     clahe_img = clahe.apply(gray)
 
-    # Median blur — remove IR sensor grain noise
+    # Median blur — remove IR sensor grain/noise
     blurred = cv2.medianBlur(clahe_img, 5)
 
-    # Otsu binarization — auto threshold, veins=white skin=black
+    # Otsu binarization — auto threshold: veins=white, skin=black
     _, binary = cv2.threshold(
         blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
@@ -35,9 +36,14 @@ def preprocess_vein(image_path, show_steps=False):
     skeleton     = skeletonize(closed // 255)
     skeleton_img = (skeleton * 255).astype(np.uint8)
 
+    # Guard — if skeleton is completely empty, skip this image
+    if np.sum(skeleton_img) == 0:
+        print(f"  WARNING: Skeleton is empty for {image_path} — image may be too dark/bright")
+        return None
+
     if show_steps:
         steps  = [gray, clahe_img, blurred, binary, closed, skeleton_img]
-        titles = ['1.Gray','2.CLAHE','3.Blur','4.Otsu','5.Close','6.Skeleton']
+        titles = ['1.Gray', '2.CLAHE', '3.Blur', '4.Otsu', '5.Close', '6.Skeleton']
         fig, axes = plt.subplots(1, 6, figsize=(22, 4))
         for ax, title, image in zip(axes, titles, steps):
             ax.imshow(image, cmap='gray')
