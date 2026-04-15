@@ -1,4 +1,4 @@
-# evaluate.py
+# evaluate.py — test accuracy and calculate unlock threshold
 
 import os
 import cv2
@@ -7,10 +7,13 @@ import pickle
 import matplotlib.pyplot as plt
 from preprocess import preprocess_vein
 
-ENROLL_COUNT = 15   # must match enroll.py
+ENROLL_COUNT = 20       # must match enroll.py — these images are SKIPPED in testing
+ME_FOLDER    = "data/me"
+FRIEND_FOLDER = "data/friend"   # can be empty for now — handled gracefully
 
 
 def get_score(image_path, template):
+    """Score a single image against the enrolled template."""
     orb      = cv2.ORB_create(nfeatures=500)
     skeleton = preprocess_vein(image_path, show_steps=False)
     if skeleton is None:
@@ -25,6 +28,9 @@ def get_score(image_path, template):
 
 
 def get_test_files(folder, skip=ENROLL_COUNT):
+    """Return files from folder, skipping first `skip` (those were used for enrollment)."""
+    if not os.path.exists(folder):
+        return []
     all_f = sorted([
         f for f in os.listdir(folder)
         if f.lower().endswith(('.jpg', '.jpeg', '.png'))
@@ -32,72 +38,110 @@ def get_test_files(folder, skip=ENROLL_COUNT):
     return all_f[skip:]
 
 
+def get_all_files(folder):
+    """Return all image files from a folder."""
+    if not os.path.exists(folder):
+        return []
+    return sorted([
+        f for f in os.listdir(folder)
+        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+    ])
+
+
 if __name__ == "__main__":
 
-    # Load me template
+    # ── Load template ──────────────────────────────────────────────────────────
     try:
         with open("data/templates/me_template.pkl", 'rb') as f:
             template = pickle.load(f)
         print("\n  Template loaded successfully.")
     except FileNotFoundError:
-        print("  ERROR: Template not found. Run enroll.py first!")
+        print("  ERROR: me_template.pkl not found.")
+        print("  Run enroll.py first!")
         exit()
 
-    # me test images (authorized — should score HIGH)
-    me_test = get_test_files(r"C:\Users\PRANAY\OneDrive\Desktop\Mini_project_1\test_images")
+    # ── Get test files ─────────────────────────────────────────────────────────
+    # My test images = images from data/me AFTER the first ENROLL_COUNT (which were used to train)
+    me_test_files    = get_test_files(ME_FOLDER, skip=ENROLL_COUNT)
 
-    # Also load stranger scores silently just to calculate threshold
-    stranger_test = sorted([
-        f for f in os.listdir(r"C:\Users\PRANAY\OneDrive\Desktop\Mini_project_1\test_images")
-        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-    ])
+    # Friend images = ALL images from data/friend (none were used for training)
+    friend_test_files = get_all_files(FRIEND_FOLDER)
 
-    print(f"\n  me test images  : {len(me_test)}")
-    print(f"  Stranger images     : {len(stranger_test)} (used only for threshold calc)\n")
+    print(f"\n  My test images     : {len(me_test_files)}  (from data/me, skipping first {ENROLL_COUNT})")
+    print(f"  Friend images      : {len(friend_test_files)}  (from data/friend)")
 
-    # Score everything
-    me_scores   = []
-    stranger_scores = []
+    if not me_test_files:
+        print("\n  ERROR: No test images found!")
+        print(f"  You need more than {ENROLL_COUNT} images in data/me/")
+        print(f"  Currently only have images used for enrollment.")
+        exit()
 
-    print("  Scoring me images...")
-    for f in me_test:
-        s = get_score(f"data/me/{f}", template)
-        me_scores.append(s)
-        print(f"    {f:<30} →  {s:>4}  (authorized)")
+    # ── Score my images ────────────────────────────────────────────────────────
+    me_scores = []
+    print("\n  Scoring MY images (should score HIGH)...")
+    for f in me_test_files:
+        path  = os.path.join(ME_FOLDER, f)       # ← FIXED: correct folder
+        score = get_score(path, template)
+        me_scores.append(score)
+        print(f"    {f:<30} →  {score:>4}  ✅ (authorized)")
 
-    print("\n  Scoring stranger images (for threshold calculation only)...")
-    for f in stranger_test:
-        s = get_score(f"data/me/{f}", template)
-        stranger_scores.append(s)
-        print(f"    {f:<30} →  {s:>4}  (stranger)")
+    # ── Score friend images (impostor/stranger) ────────────────────────────────
+    friend_scores = []
+    if friend_test_files:
+        print("\n  Scoring FRIEND images (should score LOW)...")
+        for f in friend_test_files:
+            path  = os.path.join(FRIEND_FOLDER, f)   # ← FIXED: correct folder
+            score = get_score(path, template)
+            friend_scores.append(score)
+            print(f"    {f:<30} →  {score:>4}  ❌ (impostor)")
+    else:
+        print("\n  NOTE: No friend images found in data/friend/")
+        print("  Threshold will be estimated from your own scores only.")
+        print("  Add friend images later and re-run evaluate.py for accurate threshold.\n")
 
-    # ── Threshold Calculation ─────────────────────────────────────────────────
-    min_me   = min(me_scores)   if me_scores   else 0
-    max_stranger = max(stranger_scores) if stranger_scores else 0
-    gap          = min_me - max_stranger
+    # ── Threshold Calculation ──────────────────────────────────────────────────
+    min_me       = min(me_scores) if me_scores else 0
+    max_me       = max(me_scores) if me_scores else 0
+    avg_me       = np.mean(me_scores) if me_scores else 0
 
     print(f"\n{'='*52}")
-    print(f"  me scores   →  min={min(me_scores)}  "
-          f"max={max(me_scores)}  "
-          f"avg={np.mean(me_scores):.1f}")
-    print(f"  Stranger scores →  min={min(stranger_scores)}  "
-          f"max={max(stranger_scores)}  "
-          f"avg={np.mean(stranger_scores):.1f}")
-    print(f"  Gap (me min - stranger max) = {gap}")
+    print(f"  MY scores   →  min={min_me}  max={max_me}  avg={avg_me:.1f}")
 
-    if gap > 0:
-        threshold = int(max_stranger + gap * 0.5)
-        print(f"\n  GAP EXISTS — system can tell them apart!")
-        print(f"  Threshold = max_stranger + (gap × 0.5) = {threshold}")
+    if friend_scores:
+        max_friend   = max(friend_scores)
+        min_friend   = min(friend_scores)
+        avg_friend   = np.mean(friend_scores)
+        gap          = min_me - max_friend
+
+        print(f"  Friend scores →  min={min_friend}  max={max_friend}  avg={avg_friend:.1f}")
+        print(f"  Gap (my min - friend max) = {gap}")
+
+        if gap > 0:
+            threshold = int(max_friend + gap * 0.5)
+            print(f"\n  GAP EXISTS — system can tell you apart from friend!")
+            print(f"  Threshold = friend max + (gap × 0.5) = {threshold}")
+        else:
+            threshold = int(min_me * 0.80)
+            print(f"\n  WARNING: Scores overlap by {abs(gap)} points.")
+            print(f"  Using fallback threshold = 80% of my min = {threshold}")
     else:
-        threshold = int(min_me * 0.80)
-        print(f"\n  WARNING: Scores overlap by {abs(gap)} points.")
-        print(f"  Using fallback threshold = 80% of me min = {threshold}")
+        # No friend data yet — estimate conservatively from own scores
+        threshold = int(min_me * 0.75)
+        max_friend = 0
+        friend_scores = []
+        print(f"  No friend data → estimated threshold = 75% of my min = {threshold}")
 
-    print(f"\n  >>> Update match.py:  THRESHOLD = {threshold} <<<")
+    print(f"\n  >>> Threshold = {threshold} <<<")
     print(f"{'='*52}")
 
-    # ── Graph (me Only) ───────────────────────────────────────────────────
+    # ── Save threshold ─────────────────────────────────────────────────────────
+    os.makedirs("data/templates", exist_ok=True)
+    with open("data/templates/threshold.txt", 'w') as f:
+        f.write(str(threshold))
+    print(f"\n  Threshold saved → data/templates/threshold.txt")
+    print(f"  match.py will use this automatically!\n")
+
+    # ── Graph ──────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(14, 7))
     fig.patch.set_facecolor('#0f0f1a')
     ax.set_facecolor('#0f0f1a')
@@ -105,132 +149,56 @@ if __name__ == "__main__":
     n_me = len(me_scores)
     x_me = list(range(1, n_me + 1))
 
-    # Connecting line
     ax.plot(x_me, me_scores,
             color='#555577', linewidth=1.4, zorder=2, alpha=0.6)
-
-    # me dots — green circles
     ax.scatter(x_me, me_scores,
                color='#00e676', s=100, marker='o', zorder=4,
-               label='me (authorized)')
+               label='Me (authorized)')
 
-    # Threshold line
+    if friend_scores:
+        n_fr = len(friend_scores)
+        x_fr = list(range(n_me + 1, n_me + n_fr + 1))
+        ax.plot(x_fr, friend_scores,
+                color='#774444', linewidth=1.4, zorder=2, alpha=0.6)
+        ax.scatter(x_fr, friend_scores,
+                   color='#ff5252', s=100, marker='x', zorder=4,
+                   label='Friend/Impostor')
+
     ax.axhline(y=threshold, color='white', linestyle='--',
                linewidth=2, zorder=5,
                label=f'Unlock Threshold = {threshold}')
-
-    # Min me score line
     ax.axhline(y=min_me, color='#ffab00', linestyle=':',
                linewidth=1.5, zorder=5,
-               label=f'me min score = {min_me}')
+               label=f'My min score = {min_me}')
 
-    # Max stranger score line (shown as reference for threshold explanation)
-    ax.axhline(y=max_stranger, color='#ff6d00', linestyle=':',
-               linewidth=1.5, zorder=5,
-               label=f'Stranger max score = {max_stranger} (threshold reference)')
-
-    # Shading — GRANTED zone (above threshold)
     top = max(me_scores) + 80
-    ax.fill_between(x_me, threshold, top,
-                    color='#00e676', alpha=0.06)
+    ax.fill_between(range(0, n_me + (len(friend_scores) or 1) + 2),
+                    threshold, top, color='#00e676', alpha=0.05)
+    ax.fill_between(range(0, n_me + (len(friend_scores) or 1) + 2),
+                    0, threshold, color='#ff1744', alpha=0.04)
 
-    # Shading — DENIED zone (below threshold)
-    ax.fill_between(x_me, 0, threshold,
-                    color='#ff1744', alpha=0.05)
-
-    # GRANTED / DENIED zone labels
-    ax.text(n_me * 0.5, threshold + 15,
-            "✅  GRANTED ZONE  (above threshold)",
-            ha='center', fontsize=10, color='#00e676', fontweight='bold')
-    ax.text(n_me * 0.5, threshold - 25,
-            "❌  DENIED ZONE  (below threshold)",
-            ha='center', fontsize=10, color='#ff4444', fontweight='bold')
-
-    # Gap annotation arrow
-    if gap > 0:
-        ax.annotate('',
-            xy=(n_me + 0.5, threshold),
-            xytext=(n_me + 0.5, min_me),
-            arrowprops=dict(arrowstyle='<->', color='#ffab00', lw=2))
-        ax.text(n_me + 0.7,
-                (threshold + min_me) / 2,
-                f'  Safety\n  gap\n  = {gap}',
-                color='#ffab00', fontsize=9)
-
-    # Accuracy for me only
     me_correct = sum(1 for s in me_scores if s >= threshold)
-    accuracy       = (me_correct / n_me) * 100
+    accuracy   = (me_correct / n_me) * 100 if n_me else 0
 
     ax.text(0.98, 0.97,
-            f"me Accuracy: {accuracy:.1f}%\n"
-            f"me granted  : {me_correct}/{n_me}\n"
-            f"Threshold used  : {threshold}",
+            f"My Accuracy  : {accuracy:.1f}%\n"
+            f"Granted      : {me_correct}/{n_me}\n"
+            f"Threshold    : {threshold}",
             transform=ax.transAxes, ha='right', va='top',
             fontsize=11, color='white',
-            bbox=dict(boxstyle='round,pad=0.6',
-                      facecolor='#111122',
+            bbox=dict(boxstyle='round,pad=0.6', facecolor='#111122',
                       edgecolor='#00e676', alpha=0.95))
 
-    # Threshold explanation box (bottom right)
-    if gap > 0:
-        thresh_explanation = (
-            f"📐  HOW THRESHOLD = {threshold} WAS CALCULATED\n\n"
-            f"  me min score   = {min_me}\n"
-            f"  Stranger max score = {max_stranger}\n"
-            f"  Gap                = {min_me} - {max_stranger} = {gap}  ✅ (no overlap)\n\n"
-            f"  Threshold = Stranger max + (Gap × 0.5)\n"
-            f"            = {max_stranger} + ({gap} × 0.5)\n"
-            f"            = {threshold}\n\n"
-            f"  This places the threshold exactly in the\n"
-            f"  middle of the safety gap between me\n"
-            f"  and stranger scores."
-        )
-    else:
-        thresh_explanation = (
-            f"📐  HOW THRESHOLD = {threshold} WAS CALCULATED\n\n"
-            f"  me min score   = {min_me}\n"
-            f"  Stranger max score = {max_stranger}\n"
-            f"  Gap                = {gap}  ⚠️ (scores overlap!)\n\n"
-            f"  Fallback: Threshold = me min × 0.80\n"
-            f"          = {min_me} × 0.80 = {threshold}\n\n"
-            f"  WARNING: Add more varied images to\n"
-            f"  improve separation."
-        )
-
-    fig.text(0.60, 0.01, thresh_explanation,
-             fontsize=9, color='#bbbbdd',
-             verticalalignment='bottom',
-             bbox=dict(boxstyle='round,pad=0.7', facecolor='#0a0a1a',
-                       edgecolor='#ffab00', alpha=0.95))
-
-    # How to read box
-    notes = (
-        "📌  HOW TO READ THIS GRAPH\n\n"
-        "• Each green dot = one me wrist image tested against the stored template\n"
-        "• Y-axis = match score (how many vein feature points matched)\n"
-        "• All dots should be ABOVE the white threshold line → GRANTED\n"
-        "• White dashed line = unlock threshold (boundary between granted & denied)\n"
-        "• Orange dotted line = me's min score  |  Red dotted = stranger's max score\n"
-        "• Threshold sits in the middle of the gap between these two lines"
-    )
-    fig.text(0.01, 0.01, notes, fontsize=8.5, color='#bbbbdd',
-             verticalalignment='bottom',
-             bbox=dict(boxstyle='round,pad=0.7', facecolor='#0a0a1a',
-                       edgecolor='#333366', alpha=0.95))
-
-    # Styling
     ax.tick_params(colors='#cccccc', labelsize=10)
     for spine in ax.spines.values():
         spine.set_edgecolor('#333355')
-    ax.set_xlim(0, n_me + 2)
+    ax.set_xlim(0, n_me + len(friend_scores) + 2)
     ax.set_ylim(0, top + 40)
-    ax.set_xlabel("Test Image Number  (enrollment images not shown)",
-                  fontsize=11, color='#aaaacc', labelpad=10)
-    ax.set_ylabel("Match Score\n(how many vein features matched the template)",
-                  fontsize=11, color='#aaaacc', labelpad=10)
+    ax.set_xlabel("Test Image Number", fontsize=11, color='#aaaacc', labelpad=10)
+    ax.set_ylabel("Match Score", fontsize=11, color='#aaaacc', labelpad=10)
     ax.set_title(
-        "BioRhythm Lock — Authorized Wrist Verification\n"
-        "🟢 Green circle = Authorized (me)     |     White dashed = Unlock Threshold",
+        "BioRhythm Lock — Wrist Verification Results\n"
+        "🟢 Green = Me (authorized)   🔴 Red = Friend (impostor)   — = Threshold",
         fontsize=13, color='white', pad=15, fontweight='bold')
     ax.yaxis.grid(True, color='#222244', linewidth=0.8)
     ax.xaxis.grid(True, color='#222244', linewidth=0.8)
@@ -238,10 +206,5 @@ if __name__ == "__main__":
               facecolor='#1a1a2e', edgecolor='#333366',
               labelcolor='white', framealpha=0.95)
 
-    plt.tight_layout(rect=[0, 0.28, 1, 1])
-    os.makedirs("data/templates", exist_ok=True)
-    with open("data/templates/threshold.txt", 'w') as f:
-        f.write(str(threshold))
-    print(f"\n  Threshold saved to data/templates/threshold.txt")
-    print(f"  match.py will now use this automatically!")
+    plt.tight_layout()
     plt.show()
